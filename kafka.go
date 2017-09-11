@@ -65,7 +65,7 @@ func startProducerWork(broker *kafka.Broker) {
 				continue
 			}
 			msg := &proto.Message{Key: KEY_MJHP_RESP, Value: bin}
-			log.Printf("resp to: %s, data: %v", resp.fromTopic, resp)
+			log.Printf("resp to: %s", resp.fromTopic)
 			_, err = producer.Produce(resp.fromTopic, 0, msg)
 			if err != nil {
 				log.Println("kafka produce error: ", err)

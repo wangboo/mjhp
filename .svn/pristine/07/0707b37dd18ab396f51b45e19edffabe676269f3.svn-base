@@ -1,0 +1,6 @@
+# debug详细打印
+debug = true
+# 计算使用进程数
+compute.num = 4
+kafka.topic = mjhp
+kafka.addr = 127.0.0.1:9092

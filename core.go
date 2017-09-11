@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"bufio"
 	"io/ioutil"
+	"encoding/base64"
 )
 
 var tiles = []byte{
@@ -39,9 +40,15 @@ var full = []byte{
 	//0x31, 0x41, 0x51, 0x61, 0x71, 0x81, 0x91,             // East South West North Red Green White
 }
 
+// 不带癞子
 var wins = make(map[int]bool, 9000)
+// 幺九2色
+var lys = make(map[string]bool, 780)
+// 6癞子8手牌
 var lz6_8 = make(map[int64]bool, 410861)
+// 5癞子9手牌
 var lz5_9 = make(map[int64]bool, 2124056)
+// 5癞子4手牌
 var lz5_6 = make(map[int64]bool, 47132)
 
 func findPairs() [][]byte {
@@ -169,6 +176,16 @@ func isCanHuLz6_8(hands []byte) bool {
 }
 
 func isCanHuWithLz(cache map[int64]bool, hands []byte) bool {
+	arr := transFrom2Color(hands)
+	v := byteToInt64(arr)
+	_, ok := cache[v]
+	if cfg.IsDebugOn {
+		log.Println("isCanHuWithLz v = ", v)
+	}
+	return ok
+}
+
+func transFrom2Color(hands []byte) []byte {
 	count := make([]byte, 3, 3)
 	for _, v := range hands {
 		if v < 0x10 {
@@ -179,7 +196,7 @@ func isCanHuWithLz(cache map[int64]bool, hands []byte) bool {
 			count[2]++
 		}
 	}
-	printMj(hands)
+	//printMj(hands)
 	var arr []byte
 	if count[0] > 0 && count[1] > 0 {
 		arr = hands
@@ -202,12 +219,7 @@ func isCanHuWithLz(cache map[int64]bool, hands []byte) bool {
 		// 条变成了万，重新整理顺序
 		sort.Sort(byteSlice(arr))
 	}
-	v := byteToInt64(arr)
-	_, ok := cache[v]
-	if cfg.IsDebugOn {
-		log.Println("isCanHuWithLz v = ", v)
-	}
-	return ok
+	return arr
 }
 
 func bytesToInt(win []byte) int {
@@ -225,8 +237,6 @@ func bytesToInt(win []byte) int {
 			pos++
 		}
 	}
-	//log.Printf("win = %s\n", base64.StdEncoding.EncodeToString(win))
-	//printMask(tmp)
 	res := 1
 	for _, v := range tmp {
 		switch v {
@@ -258,6 +268,11 @@ func bytesToInt(win []byte) int {
 	//log.Printf("res = %b\n", res)
 	return res
 }
+
+func bytesToStr(bin []byte) string {
+	return base64.StdEncoding.EncodeToString(bin)
+}
+
 func printMask(mask []byte) {
 	var str string
 	for _, m := range mask {
@@ -290,6 +305,7 @@ func LoadData() {
 	loadDataFile(wins, "data/set11.data")
 	loadDataFile(wins, "data/set8.data")
 	loadDataFile(wins, "data/set5.data")
+	loadDataStrFile(lys, "data/yj.data")
 	loadDataFile64(lz6_8, "data/lz6_8.data")
 	loadDataFile64(lz5_9, "data/lz5_9.data")
 	loadDataFile64(lz5_6, "data/lz5_6.data")
@@ -361,6 +377,37 @@ func loadDataFile64(cache map[int64]bool, file string) {
 			log.Fatal(fmt.Sprintf("str(%s) atoi failed", str), err)
 		}
 		cache[v] = true
+	}
+	log.Printf("loaded %s, cost: %v, cache size: %d\n", file, time.Since(beginAt), len(cache))
+}
+
+func loadDataStrFile(cache map[string]bool, file string) {
+	beginAt := time.Now()
+	f, err := os.Open(file)
+	defer f.Close()
+	if err != nil {
+		log.Fatal("Open", err)
+	}
+	// 一次性载入内存
+	data, err := ioutil.ReadAll(f)
+	if err != nil {
+		panic(err)
+	}
+	buf := bufio.NewReader(bytes.NewReader(data))
+	for {
+		line, _, err := buf.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
+				panic(err)
+			}
+		}
+		str := string(line)
+		if str == "" {
+			continue
+		}
+		cache[str] = true
 	}
 	log.Printf("loaded %s, cost: %v, cache size: %d\n", file, time.Since(beginAt), len(cache))
 }

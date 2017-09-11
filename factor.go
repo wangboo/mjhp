@@ -14,6 +14,9 @@ func CheckDataFiles() {
 	checkOrCreate("data/set8.data", FactorCreateSet8)
 	checkOrCreate("data/set5.data", FactorCreateSet5)
 	checkOrCreate("data/lz6_8.data", FactorCreateLz6_8)
+	checkOrCreate("data/lz5_9.data", FactorCreateLz5_9)
+	checkOrCreate("data/lz5_6.data", FactorCreateLz5_6)
+	checkOrCreate("data/yj.data", FactorCreateYaoJiu)
 }
 
 func checkOrCreate(file string, createFunc func()) {
@@ -575,4 +578,61 @@ func breakTheHands5(cache map[int64]bool, hands []byte, droped []byte, p []byte,
 			}
 		}
 	}
+}
+
+func FactorCreateYaoJiu() {
+	pairs := [][]byte{
+		{0x1, 0x1}, {0x9, 0x9}, {0x11, 0x11}, {0x19, 0x19},
+	}
+	groups := [][]byte{
+		{0x1, 0x1, 0x1}, {0x1, 0x2, 0x3}, {0x9, 0x9, 0x9}, {0x7, 0x8, 0x9},
+		{0x11, 0x11, 0x11}, {0x11, 0x12, 0x13}, {0x19, 0x19, 0x19}, {0x17, 0x18, 0x19},
+	}
+	cache := make(map[string]bool, 2000)
+	hands5 := make([]byte, 5, 5)
+	hands8 := make([]byte, 8, 8)
+	hands11 := make([]byte, 11, 11)
+	hands14 := make([]byte, 14, 14)
+	for _, p := range pairs {
+		for _, g0 := range groups {
+			fillHands(hands5, p, g0)
+			if checkValid(hands5) {
+				v5 := bytesToStr(hands5)
+				cache[v5] = true
+			}
+			for _, g1 := range groups {
+				fillHands(hands8, p, g0, g1)
+				if checkValid(hands8) {
+					v8 := bytesToStr(hands8)
+					cache[v8] = true
+				}
+				for _, g2 := range groups {
+					fillHands(hands11, p, g0, g1, g2)
+					if checkValid(hands11) {
+						v11 := bytesToStr(hands11)
+						cache[v11] = true
+					}
+					for _, g3 := range groups {
+						fillHands(hands14, p, g0, g1, g2, g3)
+						if checkValid(hands14) {
+							v14 := bytesToStr(hands14)
+							cache[v14] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	log.Println("making yj.data")
+	f, err := os.Create("data/yj.data")
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+	buf := bufio.NewWriterSize(f, 2048)
+	for k := range cache {
+		buf.WriteString(k)
+		buf.WriteString("\r\n")
+	}
+	buf.Flush()
 }

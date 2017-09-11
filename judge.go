@@ -9,12 +9,15 @@ import (
 // 判断请求
 // Mask 第0位 	是否略过翻数判断 （翻数判断，必定缺一门）
 // Mask 第1位	宜宾麻将
+// Mask 第2位	血战麻将
+// Mask 第3位	是否为查叫（查叫会添加一个癞子，算4癞子，8癞子会减1）
 type JudgeReq struct {
 	Id      int `json:"id"`
 	Hands   []int `json:"h"`
 	Events  []MjEvent `json:"e"`
 	LzCount int `json:"c"`
 	LzTotal int `json:"t"` // 总癞子数
+	DingQue int `json:"q"`
 
 	//FromTopic string `json:"-"`
 	//TableId   string `json:"-"`
@@ -22,6 +25,7 @@ type JudgeReq struct {
 	JudgeMj int `json:"-"` // 被判定的麻将
 	MaxRate int `json:"-"` // 最大番数
 	Mask    int `json:"-"`
+	CMask   int `json:"-"`
 
 	colorCount    int8          // 预解析，颜色数
 	hands         []byte        // 手牌
@@ -37,7 +41,8 @@ type JudgeReqBatch struct {
 	JudgeMj   int `json:"m"`
 	BenJin    int `json:"bj"` // 本金
 	MaxRate   int `json:"r"`  // 最大番数
-	Mask    int `json:"s"`
+	Mask      int `json:"s"`
+	CMask     int `json:"c"` // 选择开启的判断方法
 }
 
 func (this *JudgeReq) IsSkipRate() bool {
@@ -47,6 +52,15 @@ func (this *JudgeReq) IsSkipRate() bool {
 // 是否为宜宾麻将
 func (this *JudgeReq) IsYiBinMj() bool {
 	return this.Mask&0x02 == 0x02
+}
+
+// 是否为血战麻将
+func (this *JudgeReq) IsXueZhan() bool {
+	return this.Mask&0x04 == 0x04
+}
+
+func (this *JudgeReq) IsChaJiao() bool {
+	return this.Mask&0x08 == 0x08
 }
 
 // 本金
@@ -77,19 +91,27 @@ func (this *JudgeReq) PreAnalysis() {
 	this.handsWithLz = this.hands
 	this.colorCount = colorCount(this.hands, this.Events)
 	if this.LzCount > 0 {
-		this.handsWithLz = make([]byte, 14, 14)
+		this.handsWithLz = make([]byte, lenArr+this.LzCount, lenArr+this.LzCount)
 	}
 	if this.IsYiBinMj() {
 		this.rateAlgorithm = yiBinRate
+	} else if this.IsXueZhan() {
+		this.rateAlgorithm = xueZhanRate
+	} else {
+		log.Printf("known req mask, use xueZhanRate default, mask = %x \n", this.Mask)
+		this.rateAlgorithm = xueZhanRate
 	}
-
 }
 
-const MjEvent_Type_Peng = 1
-const MjEvent_Type_Gang = 2
+const (
+	MjEvent_Type_Peng    = 1
+	MjEvent_Type_Gang    = 2 // 其他杠
+	MjEvent_Type_AN_Gang = 3 // 暗杠
+	MjEvent_Type_FEI     = 4
+)
 
 // 麻将事件区事件
-// 1碰，2杠
+// 1碰，2杠, 3碰
 type MjEvent struct {
 	Type int8 `json:"t"`
 	Key  int `json:"k"`
@@ -97,15 +119,29 @@ type MjEvent struct {
 
 // 0,1,2 万筒条
 func (this *MjEvent) GetColorType() int8 {
-	return int8(this.Key / 8)
+	if this.Key < 9 {
+		return int8(0)
+	} else if this.Key < 18 {
+		return int8(1)
+	} else {
+		return int8(2)
+	}
 }
 
 func (event MjEvent) IsGang() bool {
-	return event.Type == MjEvent_Type_Gang
+	return event.Type == MjEvent_Type_Gang || event.Type == MjEvent_Type_AN_Gang
+}
+
+func (event MjEvent) IsAnGang() bool {
+	return event.Type == MjEvent_Type_AN_Gang
 }
 
 func (event MjEvent) IsPeng() bool {
 	return event.Type == MjEvent_Type_Peng
+}
+
+func (event MjEvent) IsFei() bool {
+	return event.Type == MjEvent_Type_FEI
 }
 
 // 麻将int表示 转 byte表示
@@ -119,7 +155,7 @@ func (this Mj) ToByte() byte {
 type JudgeResult struct {
 	Id     int `json:"id"`
 	Result bool `json:"r"`
-	Rate   int `json:"t"`
+	Rate   int64 `json:"t"`
 }
 
 // 批量的判定结果
@@ -132,13 +168,20 @@ type JudgeBatchResult struct {
 func (this *JudgeResult) Success(req *JudgeReq, rst *RateResult) {
 	this.Result = true
 	rate := req.rateAlgorithm.Calculate(req, rst)
-	if (this.Rate & 0xf) < rate {
-		this.Rate = (rst.Mask << 8) + rate
+	if int(this.Rate&0xff) < rate {
+		this.Rate = (rst.Mask << 8) + int64(rate)
+		if cfg.IsDebugOn {
+			log.Printf("Mask: %X, rate %d \n", rst.Mask, rate)
+		}
 	}
 }
 
+func (this *JudgeResult) Fail() {
+	this.Rate = RATE_MASK_DA_JIAO << 8
+}
+
 func (this *JudgeResult) IsRateFull(req *JudgeReq) bool {
-	return req.MaxRate <= (this.Rate * 0xf)
+	return req.MaxRate <= int(this.Rate & 0xf)
 }
 
 type mj int
@@ -178,11 +221,11 @@ func startComputeWorkImpl() {
 	for workRun {
 		select {
 		case req := <-workChan:
-			judgeHuBatch(req)
+			JudgeHuBatch(req, true)
 		}
 	}
 }
-func judgeHuBatch(batch *JudgeReqBatch) {
+func JudgeHuBatch(batch *JudgeReqBatch, prodMode bool) {
 	if batch.List == nil {
 		log.Println("judgeHuBatch error, list is empty: ", batch)
 	}
@@ -199,27 +242,30 @@ func judgeHuBatch(batch *JudgeReqBatch) {
 		r.JudgeMj = batch.JudgeMj
 		r.MaxRate = batch.MaxRate
 		r.Mask = batch.Mask
+		r.CMask = batch.CMask
+		r.PreAnalysis()
 		rst := judgeHu(&r)
 		if rst.Result {
-			log.Printf("可胡, rate: %d倍 %s", rst.Rate&0xf, rateToString(rst.Rate>>8))
+			log.Printf("可胡, rate: %d倍 %s", rst.Rate&0xff, rateToString(rst.Rate>>8))
 		} else {
 			log.Println("不能胡")
 		}
 		batchRst.List = append(batchRst.List, rst)
 	}
 	log.Println("batchRst: ", batchRst)
-	sendChan <- batchRst
+	if prodMode {
+		sendChan <- batchRst
+	}
+
 }
 
-func TestJudgeHu(arr []int, lzCount int, benJin int) {
-	req := &JudgeReq{Hands: arr, LzCount: lzCount, rateAlgorithm: yiBinRate, LzTotal: lzCount,
-		BenJin: benJin}
+func TestJudgeHu(req *JudgeReq) {
+	req.PreAnalysis()
 	resp := judgeHu(req)
-	log.Printf("%b\n", resp.Rate)
 	if resp.Result {
 		log.Printf("可胡, rate: %d倍 %s", resp.Rate&0xf, rateToString(resp.Rate>>8))
 	} else {
-		log.Println("不能胡")
+		log.Printf("不能胡:  %s \n", rateToString(resp.Rate>>8))
 	}
 }
 func lzArrToString(arr []int) []string {
@@ -232,9 +278,30 @@ func lzArrToString(arr []int) []string {
 
 func judgeHu(req *JudgeReq) (rst *JudgeResult) {
 	//printMask(hands)
-	req.PreAnalysis()
+	log.Printf("lzCount: %d, lzTotal: %d\n", req.LzCount, req.LzTotal)
 	printMj(req.hands)
-	rst = &JudgeResult{}
+	rst = &JudgeResult{Id: req.Id}
+	if req.colorCount > 2 || isHuaZhu(req) {
+		// 花猪
+		rst.Rate = RATE_MASK_HUA_ZU << 8
+		return
+	}
+	lenOfHands := len(req.hands)
+	if lenOfHands+req.LzCount == 2 {
+		if lenOfHands < 2 || req.hands[0] == req.hands[1] {
+			// 一张手牌
+			if req.IsSkipRate() {
+				rst.Result = true
+			} else {
+				base := judgeBaseRate(req)
+				base.Mask |= RATE_MASK_JIN_GOU
+				rst.Success(req, base)
+			}
+		} else {
+			rst.Result = false
+		}
+		return
+	}
 	switch req.LzCount {
 	case 0:
 		judge0(req, rst)
@@ -255,7 +322,21 @@ func judgeHu(req *JudgeReq) (rst *JudgeResult) {
 	case 8:
 		judge8(req, rst)
 	}
+	if !rst.Result {
+		rst.Fail()
+	}
 	return
+}
+func isHuaZhu(req *JudgeReq) bool {
+	if !req.IsXueZhan() {
+		return false
+	}
+	for _, v := range req.Hands {
+		if req.DingQue == v/9 {
+			return true
+		}
+	}
+	return false
 }
 
 func judge0(req *JudgeReq, rst *JudgeResult) {
@@ -271,7 +352,7 @@ func judge1(req *JudgeReq, rst *JudgeResult) {
 	skipRate := req.IsSkipRate()
 	for _, mj := range tiles {
 		copy(req.handsWithLz, req.hands)
-		req.handsWithLz[13] = mj
+		req.handsWithLz[len(req.handsWithLz)-1] = mj
 		//printMj(bak)
 		if isCanHu(req.handsWithLz) {
 			if skipRate {
@@ -290,11 +371,12 @@ func judge1(req *JudgeReq, rst *JudgeResult) {
 func judge2(req *JudgeReq, rst *JudgeResult) {
 	bak := req.handsWithLz
 	skipRate := req.IsSkipRate()
+	lenOfHands := len(req.handsWithLz)
 	for _, m0 := range tiles {
 		for _, m1 := range tiles {
 			copy(bak, req.hands)
-			bak[12] = m0
-			bak[13] = m1
+			bak[lenOfHands-2] = m0
+			bak[lenOfHands-1] = m1
 			if isCanHu(bak) {
 				if skipRate {
 					rst.Result = true
@@ -313,13 +395,14 @@ func judge2(req *JudgeReq, rst *JudgeResult) {
 func judge3(req *JudgeReq, rst *JudgeResult) {
 	bak := req.handsWithLz
 	skipRate := req.IsSkipRate()
+	lenOfHands := len(req.handsWithLz)
 	for _, m0 := range tiles {
 		for _, m1 := range tiles {
 			for _, m2 := range tiles {
 				copy(bak, req.hands)
-				bak[11] = m0
-				bak[12] = m1
-				bak[13] = m2
+				bak[lenOfHands-3] = m0
+				bak[lenOfHands-2] = m1
+				bak[lenOfHands-1] = m2
 				if isCanHu(bak) {
 					if skipRate {
 						rst.Result = true
@@ -340,6 +423,7 @@ func judge4(req *JudgeReq, rst *JudgeResult) {
 	hands := req.hands
 	bak := req.handsWithLz
 	req.hands = bak
+	lenOfHands := len(req.handsWithLz)
 	skipRate := req.IsSkipRate()
 	//i := 0
 	for _, m0 := range tiles {
@@ -347,10 +431,10 @@ func judge4(req *JudgeReq, rst *JudgeResult) {
 			for _, m2 := range tiles {
 				for _, m3 := range tiles {
 					copy(bak, hands)
-					bak[10] = m0
-					bak[11] = m1
-					bak[12] = m2
-					bak[13] = m3
+					bak[lenOfHands-4] = m0
+					bak[lenOfHands-3] = m1
+					bak[lenOfHands-2] = m2
+					bak[lenOfHands-1] = m3
 					if isCanHu(bak) {
 						if skipRate {
 							rst.Result = true
@@ -518,8 +602,6 @@ func colorCount(hands []byte, events []MjEvent) int8 {
 			}
 		}
 	}
-	log.Println("mask = ", mask)
-
 	if mask == 0x01 || mask == 0x02 || mask == 0x04 {
 		return int8(1)
 	} else if mask == 0x03 || mask == 0x05 || mask == 0x06 {
