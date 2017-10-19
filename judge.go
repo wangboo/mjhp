@@ -7,10 +7,11 @@ import (
 )
 
 // 判断请求
-// Mask 第0位 	是否略过翻数判断 （翻数判断，必定缺一门）
-// Mask 第1位	宜宾麻将
-// Mask 第2位	血战麻将
-// Mask 第3位	是否为查叫（查叫会添加一个癞子，算4癞子，8癞子会减1）
+// Mask 第0位 1 		是否略过翻数判断 （翻数判断，必定缺一门）
+// Mask 第1位 2		宜宾麻将
+// Mask 第2位 4		血战麻将
+// Mask 第3位 8		是否为查叫（查叫会添加一个癞子，算4癞子，8癞子会减1）
+// Mask 第4位 16 	南充麻将
 type JudgeReq struct {
 	Id      int `json:"id"`
 	Hands   []int `json:"h"`
@@ -26,6 +27,7 @@ type JudgeReq struct {
 	MaxRate int `json:"-"` // 最大番数
 	Mask    int `json:"-"`
 	CMask   int `json:"-"`
+	GenCount int `json:"-"` // 根数量
 
 	colorCount    int8          // 预解析，颜色数
 	hands         []byte        // 手牌
@@ -59,6 +61,7 @@ func (this *JudgeReq) IsXueZhan() bool {
 	return this.Mask&0x04 == 0x04
 }
 
+// 是否为查叫请求
 func (this *JudgeReq) IsChaJiao() bool {
 	return this.Mask&0x08 == 0x08
 }
@@ -66,6 +69,11 @@ func (this *JudgeReq) IsChaJiao() bool {
 // 本金
 func (this *JudgeReq) GetBenJinByte() byte {
 	return tiles[this.BenJin]
+}
+
+// 是否有4张牌上限限制, 查叫情况下，都可以突破4张，不查叫时，血战麻将，不能超过4张
+func (this *JudgeReq) IsMjCountLimit() bool {
+	return !this.IsChaJiao() || this.IsXueZhan()
 }
 
 func (this *JudgeReq) PreAnalysis() {
@@ -93,6 +101,9 @@ func (this *JudgeReq) PreAnalysis() {
 	if this.LzCount > 0 {
 		this.handsWithLz = make([]byte, lenArr+this.LzCount, lenArr+this.LzCount)
 	}
+	for idx, m := range this.hands {
+		this.handsWithLz[idx] = m
+	}
 	if this.IsYiBinMj() {
 		this.rateAlgorithm = yiBinRate
 	} else if this.IsXueZhan() {
@@ -111,7 +122,7 @@ const (
 )
 
 // 麻将事件区事件
-// 1碰，2杠, 3碰
+// 1碰，2杠, 3飞
 type MjEvent struct {
 	Type int8 `json:"t"`
 	Key  int `json:"k"`
@@ -155,6 +166,7 @@ func (this Mj) ToByte() byte {
 type JudgeResult struct {
 	Id     int `json:"id"`
 	Result bool `json:"r"`
+	GenCount int `json:"g"` // 根数量
 	Rate   int64 `json:"t"`
 }
 
@@ -169,9 +181,12 @@ func (this *JudgeResult) Success(req *JudgeReq, rst *RateResult) {
 	this.Result = true
 	rate := req.rateAlgorithm.Calculate(req, rst)
 	if int(this.Rate&0xff) < rate {
+		printMj(req.handsWithLz)
 		this.Rate = (rst.Mask << 8) + int64(rate)
+		this.GenCount = req.GenCount
 		if cfg.IsDebugOn {
-			log.Printf("Mask: %X, rate %d \n", rst.Mask, rate)
+			log.Printf("Mask: %X, rate %d, gang: %d, gen: %d \n", rst.Mask, rate, rst.GangCount,
+			req.GenCount)
 		}
 	}
 }
@@ -180,8 +195,12 @@ func (this *JudgeResult) Fail() {
 	this.Rate = RATE_MASK_DA_JIAO << 8
 }
 
+//func (this *JudgeResult) IsRateFull(req *JudgeReq) bool {
+//	return req.MaxRate <= int(this.Rate & 0xf)
+//}
+
 func (this *JudgeResult) IsRateFull(req *JudgeReq) bool {
-	return req.MaxRate <= int(this.Rate & 0xf)
+	return 6 <= int(this.Rate & 0xf)
 }
 
 type mj int
@@ -199,6 +218,20 @@ func (this mj) ToString() string {
 	default:
 		return "未知"
 	}
+}
+
+func mjIntToByte(v int) byte {
+	p := v % 9
+	t := v / 9
+	switch t {
+	case 0:
+		return 0x01 + byte(p)
+	case 1:
+		return 0x11 + byte(p)
+	case 2:
+		return 0x21 + byte(p)
+	}
+	return 0
 }
 
 var workChan chan *JudgeReqBatch
@@ -293,6 +326,7 @@ func judgeHu(req *JudgeReq) (rst *JudgeResult) {
 			if req.IsSkipRate() {
 				rst.Result = true
 			} else {
+				req.handsWithLz[1] = req.handsWithLz[0]
 				base := judgeBaseRate(req)
 				base.Mask |= RATE_MASK_JIN_GOU
 				rst.Success(req, base)
@@ -321,6 +355,8 @@ func judgeHu(req *JudgeReq) (rst *JudgeResult) {
 		judge7(req, rst)
 	case 8:
 		judge8(req, rst)
+	default:
+		judge8(req, rst)
 	}
 	if !rst.Result {
 		rst.Fail()
@@ -341,6 +377,10 @@ func isHuaZhu(req *JudgeReq) bool {
 
 func judge0(req *JudgeReq, rst *JudgeResult) {
 	rst.Result = isCanHu(req.hands)
+	// 4张牌限制检查
+	if req.IsMjCountLimit() && !checkValid4(req.hands) {
+		return
+	}
 	if rst.Result && !req.IsSkipRate() {
 		// 判断番数
 		rate := JudgeRate(req)
@@ -350,10 +390,19 @@ func judge0(req *JudgeReq, rst *JudgeResult) {
 
 func judge1(req *JudgeReq, rst *JudgeResult) {
 	skipRate := req.IsSkipRate()
+	isChaJiao := req.IsChaJiao()
 	for _, mj := range tiles {
 		copy(req.handsWithLz, req.hands)
+		if isChaJiao {
+			t := int(mj & 0xf0 >> 4)
+			v := int(mj & 0x0f)
+			req.JudgeMj = t * 9 + v - 1
+		}
 		req.handsWithLz[len(req.handsWithLz)-1] = mj
-		//printMj(bak)
+		// 4张牌限制检查,查叫的时候，不能胡在已经超过4张的牌上
+		if req.IsMjCountLimit() && !checkValid4(req.handsWithLz) {
+			continue
+		}
 		if isCanHu(req.handsWithLz) {
 			if skipRate {
 				rst.Result = true
@@ -372,7 +421,13 @@ func judge2(req *JudgeReq, rst *JudgeResult) {
 	bak := req.handsWithLz
 	skipRate := req.IsSkipRate()
 	lenOfHands := len(req.handsWithLz)
+	isChaJiao := req.IsChaJiao()
 	for _, m0 := range tiles {
+		if isChaJiao {
+			t := int(m0 & 0xf0 >> 4)
+			v := int(m0 & 0x0f)
+			req.JudgeMj = t * 9 + v - 1
+		}
 		for _, m1 := range tiles {
 			copy(bak, req.hands)
 			bak[lenOfHands-2] = m0
@@ -396,7 +451,13 @@ func judge3(req *JudgeReq, rst *JudgeResult) {
 	bak := req.handsWithLz
 	skipRate := req.IsSkipRate()
 	lenOfHands := len(req.handsWithLz)
+	isChaJiao := req.IsChaJiao()
 	for _, m0 := range tiles {
+		if isChaJiao {
+			t := int(m0 & 0xf0 >> 4)
+			v := int(m0 & 0x0f)
+			req.JudgeMj = t * 9 + v - 1
+		}
 		for _, m1 := range tiles {
 			for _, m2 := range tiles {
 				copy(bak, req.hands)
@@ -425,8 +486,14 @@ func judge4(req *JudgeReq, rst *JudgeResult) {
 	req.hands = bak
 	lenOfHands := len(req.handsWithLz)
 	skipRate := req.IsSkipRate()
+	isChaJiao := req.IsChaJiao()
 	//i := 0
 	for _, m0 := range tiles {
+		if isChaJiao {
+			t := int(m0 & 0xf0 >> 4)
+			v := int(m0 & 0x0f)
+			req.JudgeMj = t * 9 + v - 1
+		}
 		for _, m1 := range tiles {
 			for _, m2 := range tiles {
 				for _, m3 := range tiles {
@@ -466,13 +533,17 @@ func judge5(req *JudgeReq, result *JudgeResult) {
 	} else {
 		// 双色
 		c2, c3 := judgeC23(req.hands)
+		needJudgeHu := true
 		if lenOfHands-int(c2)*2-int(c3)*3 <= 5 {
-			base.Mask |= RATE_MASK_DUIDUI_HU
+			base.Mask |= RATE_MASK_7DUI
+			needJudgeHu = false
 		}
 		if req.colorCount == 1 {
 			base.Mask |= RATE_MASK_QING_YI_SE
-		} else {
-			if lenOfHands == 6 { // 6张手牌
+			needJudgeHu = false
+		}
+		if needJudgeHu {
+			if lenOfHands == 6 { //b 6张手牌
 				if !isCanHuLz5_6(req.hands) {
 					return
 				}
@@ -526,18 +597,18 @@ func judge7(req *JudgeReq, result *JudgeResult) {
 		return
 	}
 	base := judgeBaseRate(req)
-	log.Printf("judge7 %b\n", base.Mask)
+	//log.Printf("judge7 %b\n", base.Mask)
 	if len(req.hands) == 7 {
 		base.Mask |= RATE_MASK_7DUI
 	} else {
 		base.Mask |= RATE_MASK_DUIDUI_HU
 	}
-	log.Printf("judge711 %b\n", base.Mask)
+	//log.Printf("judge711 %b\n", base.Mask)
 	result.Success(req, base)
 }
 
 func judge8(req *JudgeReq, result *JudgeResult) {
-	log.Println("judge8")
+	//log.Println("judge8")
 	// 是否只检查可胡， 8个癞子任意胡
 	if req.IsSkipRate() {
 		result.Result = true

@@ -17,6 +17,7 @@ func CheckDataFiles() {
 	checkOrCreate("data/lz5_9.data", FactorCreateLz5_9)
 	checkOrCreate("data/lz5_6.data", FactorCreateLz5_6)
 	checkOrCreate("data/yj.data", FactorCreateYaoJiu)
+	checkOrCreate("data/yibangao.data", FactorCreateYiBanGao)
 }
 
 func checkOrCreate(file string, createFunc func()) {
@@ -30,7 +31,7 @@ func checkOrCreate(file string, createFunc func()) {
 
 func FactorCreateSet14() {
 	log.Println("making set14.data")
-	f, err := os.Create("set14.data")
+	f, err := os.Create("data/set14.data")
 	if err != nil {
 		panic(err)
 	}
@@ -77,7 +78,7 @@ func FactorCreateSet14() {
 
 func FactorCreateSet11() {
 	log.Println("making set11.data")
-	f, err := os.Create("set11.data")
+	f, err := os.Create("data/set11.data")
 	if err != nil {
 		panic(err)
 	}
@@ -119,7 +120,7 @@ func FactorCreateSet11() {
 
 func FactorCreateSet8() {
 	log.Println("making set8.data")
-	f, err := os.Create("set8.data")
+	f, err := os.Create("data/set8.data")
 	if err != nil {
 		panic(err)
 	}
@@ -156,7 +157,7 @@ func FactorCreateSet8() {
 
 func FactorCreateSet5() {
 	log.Println("making set5.data")
-	f, err := os.Create("set5.data")
+	f, err := os.Create("data/set5.data")
 	if err != nil {
 		panic(err)
 	}
@@ -635,4 +636,8 @@ func FactorCreateYaoJiu() {
 		buf.WriteString("\r\n")
 	}
 	buf.Flush()
+}
+
+func FactorCreateYiBanGao() {
+
 }

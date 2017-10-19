@@ -41,7 +41,11 @@ var full = []byte{
 }
 
 // 不带癞子
-var wins = make(map[int]bool, 9000)
+var set14 = make(map[int]bool, 9000)
+var set11 = make(map[int]bool, 1000)
+var set8 = make(map[int]bool, 900)
+var set5 = make(map[int]bool, 50)
+
 // 幺九2色
 var lys = make(map[string]bool, 780)
 // 6癞子8手牌
@@ -94,7 +98,22 @@ func (b byteSlice) Swap(i, j int) {
 	b[i], b[j] = b[j], b[i]
 }
 
+// 单个牌，可以有7个
 func checkValid(win []byte) bool {
+	lenOfWin := len(win)
+	if lenOfWin < 4 {
+		return true
+	}
+	sort.Sort(byteSlice(win))
+	for i := 7; i < lenOfWin; i++ {
+		if win[i] == win[i-7] {
+			return false
+		}
+	}
+	return true
+}
+
+func checkValid4(win []byte) bool {
 	lenOfWin := len(win)
 	if lenOfWin < 4 {
 		return true
@@ -251,18 +270,36 @@ func bytesToInt(win []byte) int {
 		case 0x04:
 			res <<= 7
 			res |= 0x7E // 1111110
-		case 0x0B:
+		case 0x05: // 5张牌
+			res <<= 9
+			res |= 0x1FE // 111111110
+		case 0x06: // 6张牌
+			res <<= 11
+			res |= 0x7FE // 11111111110
+		case 0x07: // 7张牌
+			res <<= 13
+			res |= 0x1FFE // 11111111110
+		case 0x0B:  // 1张牌
 			res <<= 2
 			res |= 0x02 // 10
-		case 0x0C:
+		case 0x0C:  // 2张牌
 			res <<= 4
 			res |= 0x0E // 1110
-		case 0x0D:
+		case 0x0D:  // 3张牌
 			res <<= 6
 			res |= 0x3E // 111110
-		case 0x0E:
+		case 0x0E:  // 4张牌
 			res <<= 8
 			res |= 0xFE // 11111110
+		case 0x0F:  // 5张牌
+			res <<= 10
+			res |= 0x3FE // 11111110
+		case 0x10:  // 6张牌
+			res <<= 12
+			res |= 0xFFFE // 11111110
+		case 0x11:  // 6张牌
+			res <<= 14
+			res |= 0x3FFFE // 11111110
 		}
 	}
 	//log.Printf("res = %b\n", res)
@@ -289,22 +326,29 @@ func isCanHu(hands []byte) bool {
 	//printMj(hands)
 	v := bytesToInt(hands)
 	//log.Println("v: ", v)
-	_, ok := wins[v]
+	var ok bool
+	switch len(hands) {
+	case 14:
+		_, ok = set14[v]
+	case 11:
+		_, ok = set11[v]
+	case 8:
+		_, ok = set8[v]
+	case 5:
+		_, ok = set5[v]
+	}
+
 	return ok
 }
 
 func LoadData() {
-	if len(wins) > 0 {
-		log.Println("wins data is already laoded")
-		return
-	}
 	if _, err := os.Stat("data"); err != nil {
 		os.Mkdir("data", os.ModePerm)
 	}
-	loadDataFile(wins, "data/set14.data")
-	loadDataFile(wins, "data/set11.data")
-	loadDataFile(wins, "data/set8.data")
-	loadDataFile(wins, "data/set5.data")
+	loadDataFile(set14, "data/set14.data")
+	loadDataFile(set11, "data/set11.data")
+	loadDataFile(set8, "data/set8.data")
+	loadDataFile(set5, "data/set5.data")
 	loadDataStrFile(lys, "data/yj.data")
 	loadDataFile64(lz6_8, "data/lz6_8.data")
 	loadDataFile64(lz5_9, "data/lz5_9.data")

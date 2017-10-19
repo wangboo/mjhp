@@ -1,13 +1,16 @@
 package mjhp
 
-import "log"
+import (
+	"log"
+)
 
 type RateAlgorithm interface {
 	Calculate(req *JudgeReq, rst *RateResult) int // 计算额外倍率
 }
 
-type YiBinRate struct{}
-type XueZhanRate struct{}
+type YiBinRate struct{}    // 宜宾麻将
+type XueZhanRate struct{}  // 血战、三人两房麻将
+type NanChongRate struct{} // 南充麻将,不需要缺一门，如果缺一门，加一番
 
 var (
 	yiBinRate   = &YiBinRate{}
@@ -16,6 +19,7 @@ var (
 
 // 	宜宾麻将
 func (this *YiBinRate) Calculate(req *JudgeReq, rst *RateResult) int {
+	//printMj(req.handsWithLz)
 	// 清一色
 	isQingYiSe := rst.Mask&RATE_MASK_QING_YI_SE == RATE_MASK_QING_YI_SE
 	isQiDui := rst.Mask&RATE_MASK_7DUI == RATE_MASK_7DUI
@@ -31,26 +35,33 @@ func (this *YiBinRate) Calculate(req *JudgeReq, rst *RateResult) int {
 		rst.Mask &= RATE_MASK_DUIDUI_HU ^ RATE_MASK
 	}
 
+	// 7对逻辑修复, 7对癞子变的杠不加番，但是要算牌型（龙7对，双龙七对）!req.IsChaJiao() && 略去
+	//log.Println("before isQiDui = ", isQiDui, ", rst.GangCount = ", rst.GangCount)
+	if isQiDui {
+		rst.GangCount = getGangWithLz(req.handsWithLz)
+	}
+	//log.Println("after isQiDui = ", isQiDui, ", rst.GangCount = ", rst.GangCount)
+
 	base := 0
 	if isQingYiSe {
 		if isQiDui {
-			if rst.GangCount == 2 {
+			if rst.GangCount >= 2 {
 				// 清双龙七对
 				base = 6
 				rst.Mask |= RATE_MASK_QING_7DUI_LONG2
 			} else if rst.GangCount == 1 {
 				// 清一色龙七对
-				base = 5
+				base = 6
 				rst.Mask |= RATE_MASK_QING_7DUI_LONG
 			} else {
 				// 清七对
-				base = 4
+				base = 6
 				rst.Mask |= RATE_MASK_QING_7DUI
 			}
 			rst.GangCount = 0
 		} else if isDuiDuiHu {
 			// 清对
-			base = 5
+			base = 6
 			rst.Mask |= RATE_MASK_QING_DUI
 		} else {
 			// 清一色
@@ -60,12 +71,15 @@ func (this *YiBinRate) Calculate(req *JudgeReq, rst *RateResult) int {
 	} else {
 		// 不是清一色
 		if isQiDui {
-			if rst.GangCount >= 2 {
-				rst.Mask |= RATE_MASK_LONG_7DUI2
+			if rst.GangCount >= 3 {
+				rst.Mask |= RATE_MASK_LONG_7DUI3
 				base = 6
+			} else if rst.GangCount >= 2 {
+				rst.Mask |= RATE_MASK_LONG_7DUI2
+				base = 5
 			} else if rst.GangCount == 1 {
 				rst.Mask |= RATE_MASK_LONG_7DUI
-				base = 5
+				base = 4
 			} else {
 				rst.Mask |= RATE_MASK_7DUI
 				base = 3
@@ -97,10 +111,12 @@ func (this *YiBinRate) Calculate(req *JudgeReq, rst *RateResult) int {
 	if lzCount >= 8 {
 		rst.Mask |= RATE_MASK_LAIZI8
 		base += 2
-	} else if lzCount >= 4 {
-		rst.Mask |= RATE_MASK_LAIZI4
-		base += 1
 	}
+	// 去掉四个癞子
+	//else if lzCount >= 4 {
+	//	rst.Mask |= RATE_MASK_LAIZI4
+	//	base += 1
+	//}
 	// 无听用2番，事件区无听用1番
 	//if req.Events == nil || req.LzTotal-req.LzCount == 0 {
 	//	base += 1
@@ -136,12 +152,27 @@ func (this *YiBinRate) Calculate(req *JudgeReq, rst *RateResult) int {
 	return base
 }
 
+func getGangWithLz(hands []byte) (gangCount int) {
+	lenOfHands := len(hands)
+	for i := 0; i < lenOfHands-3; {
+		//log.Printf("i = %v, hands[i] = %v, hands[i+1] = %v, hands[i+2] = %v, hands[i+3] = %v\n",
+		//i, hands[i], hands[i+1], hands[i+2], hands[i+3])
+		if hands[i] == hands[i+1] && hands[i] == hands[i+2] && hands[i] == hands[i+3] {
+			//log.Println("i = ", gangCount)
+			gangCount++
+			i += 4
+		} else {
+			i++
+		}
+	}
+	return
+}
+
 // 	血战麻将
 func (this *XueZhanRate) Calculate(req *JudgeReq, rst *RateResult) int {
 	isQingYiSe := rst.Mask&RATE_MASK_QING_YI_SE == RATE_MASK_QING_YI_SE
 	isQiDui := rst.Mask&RATE_MASK_7DUI == RATE_MASK_7DUI
 	isDuiDuiHu := rst.Mask&RATE_MASK_DUIDUI_HU == RATE_MASK_DUIDUI_HU
-
 	if isQingYiSe {
 		rst.Mask &= RATE_MASK_QING_YI_SE ^ RATE_MASK
 	}
@@ -165,7 +196,7 @@ func (this *XueZhanRate) Calculate(req *JudgeReq, rst *RateResult) int {
 				// 清七对
 				rst.Mask |= RATE_MASK_QING_7DUI
 			}
-			base = 2
+			base = 4
 		} else if isDuiDuiHu {
 			// 清对
 			if req.IsDdh2Rate() {
@@ -202,28 +233,55 @@ func (this *XueZhanRate) Calculate(req *JudgeReq, rst *RateResult) int {
 			rst.Mask |= RATE_MASK_DUIDUI_HU
 		}
 	}
-	//if isQingYiSe {
-	//	base += 2
-	//}
-	//if isQiDui {
-	//	base += 2
-	//}
-	//if isDuiDuiHu {
-	//	if req.IsDdh2Rate() {
-	//		base += 2
-	//	} else {
-	//		base += 1
-	//	}
-	//}
-	if rst.Mask&RATE_MASK_JIN_GOU == RATE_MASK_JIN_GOU {
-		base += 2
+	// 将对, 全是2，5，8对 ()
+	if req.IsYJJD() {
+		if isJiangDui(req) {
+			if isQiDui {
+				rst.Mask |= RATE_MASK_JIANG_DUI
+				base += 1
+			} else {
+				rst.Mask |= RATE_MASK_JIANG_DUI
+				base += 3
+				if isDuiDuiHu {
+					if req.IsDdh2Rate() {
+						base -= 2
+					} else {
+						base -= 1
+					}
+					// 有将对，擦除对对胡标识
+					rst.Mask &= RATE_MASK_DUIDUI_HU ^ RATE_MASK
+				} else if rst.Mask&RATE_MASK_JIN_GOU == RATE_MASK_JIN_GOU {
+					// 金钩胡, 擦除对对胡标识
+					rst.Mask &= RATE_MASK_DUIDUI_HU ^ RATE_MASK
+				}
+			}
+		}
+		if isYaoJiu(req) {
+			rst.Mask |= RATE_MASK_YAO_JIU
+			base += 3
+		}
 	}
-	// 门清中张
-	if req.IsMenQing() && isMenQing(req) {
+	if rst.Mask&RATE_MASK_JIN_GOU == RATE_MASK_JIN_GOU {
+		if rst.Mask&RATE_MASK_JIANG_DUI == RATE_MASK_JIANG_DUI {
+			// 将对，加一番
+			base += 1
+		} else {
+			if req.IsDdh2Rate() {
+				base += 2
+			} else {
+				base += 1
+			}
+			base += 1
+			rst.Mask |= RATE_MASK_DUIDUI_HU
+		}
+	}
+	// 门清中张（7对不算门清）
+	if !isQiDui && req.IsMenQing() && isMenQing(req) {
 		rst.Mask |= RATE_MASK_MEN_QING
 		base += 1
 	}
-	if req.IsZhongZhang() && isZhongZhang(req) {
+	// 中张  （将对不算中张）
+	if rst.Mask&RATE_MASK_JIANG_DUI != RATE_MASK_JIANG_DUI && req.IsZhongZhang() && isZhongZhang(req) {
 		rst.Mask |= RATE_MASK_ZHONG_ZHANG
 		base += 1
 	}
@@ -233,18 +291,6 @@ func (this *XueZhanRate) Calculate(req *JudgeReq, rst *RateResult) int {
 		//log.Println("夹心5 + 1番")
 		rst.Mask |= RATE_MASK_JIA_XIN5
 		base += 1
-	}
-	// 将对, 全是2，5，8对
-	//log.Println("req.IsYJJD = ", req.IsYJJD())
-	if req.IsYJJD() {
-		if isJiangDui(req) {
-			rst.Mask |= RATE_MASK_JIANG_DUI
-			base += 1
-		}
-		if isYaoJiu(req) {
-			rst.Mask |= RATE_MASK_YAO_JIU
-			base += 2
-		}
 	}
 	return base + rst.GangCount
 }
@@ -355,4 +401,61 @@ func isJX5(req *JudgeReq) bool {
 	}
 	jx5Rst := judgeHu(jx5Req)
 	return jx5Rst.Result
+}
+
+// 南充麻将
+func (this *NanChongRate) Calculate(req *JudgeReq, rst *RateResult) (rate int) {
+	isQingYiSe := rst.Mask&RATE_MASK_QING_YI_SE == RATE_MASK_QING_YI_SE
+	isQiDui := rst.Mask&RATE_MASK_7DUI == RATE_MASK_7DUI
+	isDuiDuiHu := rst.Mask&RATE_MASK_DUIDUI_HU == RATE_MASK_DUIDUI_HU
+	// 先移除掉特征码
+	if isQingYiSe {
+		rst.Mask &= RATE_MASK_QING_YI_SE ^ RATE_MASK
+	}
+	if isQiDui {
+		rst.Mask &= RATE_MASK_7DUI ^ RATE_MASK
+	}
+	if isDuiDuiHu {
+		rst.Mask &= RATE_MASK_DUIDUI_HU ^ RATE_MASK
+	}
+	if isQingYiSe {
+		rate = 6
+		rst.Mask |= RATE_MASK_QING_YI_SE
+	} else if isQiDui {
+		rate = 6
+		rst.Mask |= RATE_MASK_7DUI
+	} else if isDuiDuiHu && isNanChongDuiDuiHu(req) {
+		rate = 4
+		rst.Mask |= RATE_MASK_DDZ
+	}
+	// 七对和对对胡不算一般高
+	if !isQiDui && !isDuiDuiHu && isYiBanGao(req.hands) {
+		rate += 1
+	}
+	// 缺一门，加一番
+	if !isQingYiSe && req.colorCount == 1 {
+		rate += 1
+		rst.Mask |= RATE_MASK_QUEMEN
+	}
+	return rate
+}
+
+// 南充对对胡，单吊才算对对胡
+func isNanChongDuiDuiHu(req *JudgeReq) bool {
+	huByte := mjIntToByte(req.JudgeMj)
+	count := 0
+	for _, v := range req.hands {
+		if huByte == v {
+			count++
+		}
+		if count > 2 {
+			return false
+		}
+	}
+	return count == 2
+}
+
+// 一般高, 只计算一次, 2,2,3,3,4,4
+func isYiBanGao(hands []byte) bool {
+	return true 
 }
